@@ -76,7 +76,7 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
     """Read historical daily cumulative balances for all top-level account categories."""
     # Build command for historical balances
     account_categories = ' '.join(TOPLEVEL_ACCOUNT_CATEGORIES)
-    command = f'hledger -f {filename} balance {account_categories} --depth 1 --period daily --cumulative --value=then,{commodity} -O json'
+    command = f'hledger -f {filename} balance {account_categories} not:tag:clopen --depth 1 --period daily --cumulative --value=then,{commodity} --infer-value -O json'
 
     # Add date range if provided
     if start_date:
@@ -207,7 +207,7 @@ def expenses_treemap_plot(balances):
     return fig
 
 def historical_balances_plot(historical_data):
-    """Create stacked area chart showing historical balances for each account category plus net worth."""
+    """Create line chart showing historical balances for each account category plus net worth."""
     dates = historical_data['dates']
     balances = historical_data['balances']
 
@@ -220,26 +220,24 @@ def historical_balances_plot(historical_data):
                 x=dates,
                 y=balances[account_name],
                 mode='lines',
-                name=account_name,
-                stackgroup='one',
-                fillcolor=None  # Let Plotly choose colors
+                name=account_name
             ))
 
-    # Add net worth as a separate line (not stacked)
+    # Add net worth as a separate line with emphasis
     if 'net_worth' in balances:
         fig.add_trace(go.Scatter(
             x=dates,
             y=balances['net_worth'],
             mode='lines',
             name='net_worth',
-            line=dict(width=3, dash='dash'),
-            stackgroup=None  # Don't stack this one
+            line=dict(width=3, dash='dash')
         ))
 
     fig.update_layout(
         title="Historical Account Balances",
         xaxis_title="Date",
-        yaxis_title="Balance",
+        yaxis_title="Balance (log scale)",
+        yaxis_type="log",
         hovermode='x unified'
     )
 
