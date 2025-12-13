@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from datetime import datetime, date
 import streamlit as st
@@ -169,7 +170,7 @@ with st.sidebar:
 
     filename = st.text_input(
         "HLedger Journal File Path",
-        value="",
+        value=os.environ.get('LEDGER_FILE', ''),
         help="Path to your hledger journal file"
     )
 
