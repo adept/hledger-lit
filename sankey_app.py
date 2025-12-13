@@ -76,7 +76,7 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
     """Read historical daily cumulative balances for all top-level account categories."""
     # Build command for historical balances
     account_categories = ' '.join(TOPLEVEL_ACCOUNT_CATEGORIES)
-    command = f'hledger -f {filename} balance {account_categories} not:tag:clopen --depth 1 --period daily --cumulative --value=then,{commodity} --infer-value -O json'
+    command = f'hledger -f {filename} balance {account_categories} not:tag:clopen --depth 1 --period daily --historical --value=then,{commodity} --infer-value -O json'
 
     # Add date range if provided
     if start_date:
@@ -101,10 +101,13 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
             # Extract floating point values from each period and apply abs()
             account_balances = []
             for amount_list in row['prrAmounts']:
+                balance = 0
                 if amount_list:
-                    balance = abs(amount_list[0]['aquantity']['floatingPoint'])
-                else:
-                    balance = 0
+                    # Find the amount matching the desired commodity
+                    for amount in amount_list:
+                        if amount['acommodity'] == commodity:
+                            balance = abs(amount['aquantity']['floatingPoint'])
+                            break
                 account_balances.append(balance)
             balances[account_name] = account_balances
 
