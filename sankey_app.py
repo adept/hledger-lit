@@ -25,7 +25,12 @@ HLEDGER_EXTRA_ARGS = ''
 def parent(account_name):
     return ':'.join(account_name.split(':')[:-1])
 
-def read_balance_report(filename, account_categories, commodity, start_date=None, end_date=None):
+def run_hledger_command(command):
+    """Execute hledger command and return parsed JSON output."""
+    process_output = subprocess.run(command.split(' '), stdout=subprocess.PIPE, text=True).stdout
+    return json.loads(process_output)
+
+def read_current_balances(filename, account_categories, commodity, start_date=None, end_date=None):
     # You might want to try just "income expenses" as account categories, or less depth via "--depth 2"
     # Explanation for the choice of arguments:
     # "balance income expenses assets liabilities" are account categories
@@ -45,10 +50,8 @@ def read_balance_report(filename, account_categories, commodity, start_date=None
 
     command += ' ' + HLEDGER_EXTRA_ARGS
 
-    process_output = subprocess.run(command.split(' '), stdout=subprocess.PIPE, text=True).stdout
-
-    # Parse JSON output
-    data = json.loads(process_output)
+    # Execute command and parse JSON output
+    data = run_hledger_command(command)
 
     # First element of the JSON array contains the account entries
     accounts = data[0]
@@ -68,6 +71,52 @@ def read_balance_report(filename, account_categories, commodity, start_date=None
             balances.append((account_name, balance))
 
     return balances
+
+def read_historical_balances(filename, commodity, start_date=None, end_date=None):
+    """Read historical daily cumulative balances for all top-level account categories."""
+    # Build command for historical balances
+    account_categories = ' '.join(TOPLEVEL_ACCOUNT_CATEGORIES)
+    command = f'hledger -f {filename} balance {account_categories} --depth 1 --period daily --cumulative --value=then,{commodity} -O json'
+
+    # Add date range if provided
+    if start_date:
+        command += f' -b {start_date}'
+    if end_date:
+        command += f' -e {end_date}'
+
+    command += ' ' + HLEDGER_EXTRA_ARGS
+
+    # Execute command and parse JSON output
+    data = run_hledger_command(command)
+
+    # Extract dates from prDates - use the start date of each period
+    dates = [period[0]['contents'] for period in data['prDates']]
+
+    # Extract balances for each account
+    balances = {}
+    for row in data['prRows']:
+        account_name = row['prrName']
+        # Only include accounts that match our top-level categories
+        if account_name in TOPLEVEL_ACCOUNT_CATEGORIES:
+            # Extract floating point values from each period and apply abs()
+            account_balances = []
+            for amount_list in row['prrAmounts']:
+                if amount_list:
+                    balance = abs(amount_list[0]['aquantity']['floatingPoint'])
+                else:
+                    balance = 0
+                account_balances.append(balance)
+            balances[account_name] = account_balances
+
+    # Calculate net worth as assets - liabilities
+    if ASSET_ACCOUNT_PAT in balances and LIABILITY_ACCOUNT_PAT in balances:
+        net_worth = [assets - liabilities
+                     for assets, liabilities in zip(balances[ASSET_ACCOUNT_PAT], balances[LIABILITY_ACCOUNT_PAT])]
+        balances['net_worth'] = net_worth
+    elif ASSET_ACCOUNT_PAT in balances:
+        balances['net_worth'] = balances[ASSET_ACCOUNT_PAT][:]
+
+    return {'dates': dates, 'balances': balances}
 
 # Convert hledger balance report into a list of (source, target, value) tuples for the sankey graph.
 # We make the following assumptions:
@@ -157,6 +206,45 @@ def expenses_treemap_plot(balances):
 
     return fig
 
+def historical_balances_plot(historical_data):
+    """Create stacked area chart showing historical balances for each account category plus net worth."""
+    dates = historical_data['dates']
+    balances = historical_data['balances']
+
+    fig = go.Figure()
+
+    # Add traces for each account category
+    for account_name in sorted(balances.keys()):
+        if account_name != 'net_worth':  # We'll add net worth separately at the end
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=balances[account_name],
+                mode='lines',
+                name=account_name,
+                stackgroup='one',
+                fillcolor=None  # Let Plotly choose colors
+            ))
+
+    # Add net worth as a separate line (not stacked)
+    if 'net_worth' in balances:
+        fig.add_trace(go.Scatter(
+            x=dates,
+            y=balances['net_worth'],
+            mode='lines',
+            name='net_worth',
+            line=dict(width=3, dash='dash'),
+            stackgroup=None  # Don't stack this one
+        ))
+
+    fig.update_layout(
+        title="Historical Account Balances",
+        xaxis_title="Date",
+        yaxis_title="Balance",
+        hovermode='x unified'
+    )
+
+    return fig
+
 
 # Streamlit App
 st.set_page_config(page_title="HLedger Sankey Visualizer", layout="wide")
@@ -205,21 +293,28 @@ if generate_button:
             with st.spinner("Generating visualizations..."):
                 # Sankey graph for all balances/flows
                 all_pat = INCOME_ACCOUNT_PAT + ' ' + EXPENSE_ACCOUNT_PAT + ' ' + ASSET_ACCOUNT_PAT + ' ' + LIABILITY_ACCOUNT_PAT
-                all_balances = read_balance_report(filename, all_pat, commodity, start_date, end_date)
+                all_balances = read_current_balances(filename, all_pat, commodity, start_date, end_date)
                 all_balances_sankey = to_sankey_data(all_balances)
                 all_balances_fig = sankey_plot(all_balances_sankey)
 
                 # Sankey graph for just income/expenses
                 income_expenses_pat = INCOME_ACCOUNT_PAT + ' ' + EXPENSE_ACCOUNT_PAT
-                income_expenses = read_balance_report(filename, income_expenses_pat, commodity, start_date, end_date)
+                income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
                 income_expenses_sankey = to_sankey_data(income_expenses)
                 income_expenses_fig = sankey_plot(income_expenses_sankey)
 
                 # Expenses treemap plot for just expenses
                 expenses_fig = expenses_treemap_plot(income_expenses)
 
-                # Display all three graphs
+                # Historical balances plot
+                historical_data = read_historical_balances(filename, commodity, start_date, end_date)
+                historical_fig = historical_balances_plot(historical_data)
+
+                # Display all graphs
                 st.success("Visualizations generated successfully!")
+
+                st.header("Historical Account Balances")
+                st.plotly_chart(historical_fig, width='stretch')
 
                 st.header("Expenses Treemap")
                 st.plotly_chart(expenses_fig, width='stretch')
