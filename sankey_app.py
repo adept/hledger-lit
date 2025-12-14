@@ -34,7 +34,7 @@ def get_config_value(config, section, key, default):
     except (configparser.NoSectionError, configparser.NoOptionError):
         return default
 
-def save_config(filename, commodity, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_categories):
+def save_config(filename, commodity, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_categories):
     """Save current configuration to config file."""
     config = configparser.ConfigParser()
 
@@ -44,11 +44,11 @@ def save_config(filename, commodity, income_pattern, expense_pattern, asset_patt
         'commodity': commodity
     }
 
-    config['patterns'] = {
-        'income': income_pattern,
-        'expense': expense_pattern,
-        'asset': asset_pattern,
-        'liability': liability_pattern,
+    config['top_level'] = {
+        'income': income_top_level,
+        'expense': expense_top_level,
+        'asset': asset_top_level,
+        'liability': liability_top_level,
         'other': other_categories
     }
 
@@ -57,16 +57,16 @@ def save_config(filename, commodity, income_pattern, expense_pattern, asset_patt
     with open(config_path, 'w') as configfile:
         config.write(configfile)
 
-# Account name substrings for recognising account types
-ASSET_ACCOUNT_PAT     = 'assets'
-LIABILITY_ACCOUNT_PAT = 'liabilities'
-INCOME_ACCOUNT_PAT    = 'income'
-EXPENSE_ACCOUNT_PAT   = 'expenses'
+# Top-level account names for recognising account types
+ASSET_TOP_LEVEL_ACCOUNT     = 'assets'
+LIABILITY_TOP_LEVEL_ACCOUNT = 'liabilities'
+INCOME_TOP_LEVEL_ACCOUNT    = 'income'
+EXPENSE_TOP_LEVEL_ACCOUNT   = 'expenses'
 OTHER_TOPLEVEL = ['revenues','virtual']
 
 # Toplevel account categories that you have in your chart of accounts.
 # Used to filter out non-account entries from the JSON balance report
-TOPLEVEL_ACCOUNT_CATEGORIES=[INCOME_ACCOUNT_PAT,EXPENSE_ACCOUNT_PAT,ASSET_ACCOUNT_PAT,LIABILITY_ACCOUNT_PAT] + OTHER_TOPLEVEL
+TOPLEVEL_ACCOUNT_CATEGORIES=[INCOME_TOP_LEVEL_ACCOUNT,EXPENSE_TOP_LEVEL_ACCOUNT,ASSET_TOP_LEVEL_ACCOUNT,LIABILITY_TOP_LEVEL_ACCOUNT] + OTHER_TOPLEVEL
 
 HLEDGER_EXTRA_ARGS = ''
 
@@ -124,14 +124,14 @@ def read_current_balances(filename, account_categories, commodity, start_date=No
     return balances
 
 def read_historical_balances(filename, commodity, start_date=None, end_date=None,
-                            income_pattern=INCOME_ACCOUNT_PAT, expense_pattern=EXPENSE_ACCOUNT_PAT,
-                            asset_pattern=ASSET_ACCOUNT_PAT, liability_pattern=LIABILITY_ACCOUNT_PAT,
+                            income_top_level=INCOME_TOP_LEVEL_ACCOUNT, expense_top_level=EXPENSE_TOP_LEVEL_ACCOUNT,
+                            asset_top_level=ASSET_TOP_LEVEL_ACCOUNT, liability_top_level=LIABILITY_TOP_LEVEL_ACCOUNT,
                             other_categories=None):
     """Read historical daily cumulative balances for all top-level account categories."""
-    # Build list of account categories including user-provided patterns
+    # Build list of account categories including user-provided top-level accounts
     if other_categories is None:
         other_categories = []
-    toplevel_categories = [income_pattern, expense_pattern, asset_pattern, liability_pattern] + other_categories
+    toplevel_categories = [income_top_level, expense_top_level, asset_top_level, liability_top_level] + other_categories
     account_categories = ' '.join(toplevel_categories)
     command = f'hledger -f {filename} balance {account_categories} not:tag:clopen --depth 1 --period daily --historical --value=then,{commodity} --infer-value -O json'
 
@@ -169,12 +169,12 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
             balances[account_name] = account_balances
 
     # Calculate net worth as assets - liabilities
-    if asset_pattern in balances and liability_pattern in balances:
+    if asset_top_level in balances and liability_top_level in balances:
         net_worth = [assets - liabilities
-                     for assets, liabilities in zip(balances[asset_pattern], balances[liability_pattern])]
+                     for assets, liabilities in zip(balances[asset_top_level], balances[liability_top_level])]
         balances['net_worth'] = net_worth
-    elif asset_pattern in balances:
-        balances['net_worth'] = balances[asset_pattern][:]
+    elif asset_top_level in balances:
+        balances['net_worth'] = balances[asset_top_level][:]
 
     return {'dates': dates, 'balances': balances}
 
@@ -185,8 +185,8 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
 # 2. For sankey diagram, we want to see how "income" is being used to cover "expenses", increas the value of "assets" and pay off "liabilities", so we assume that
 #    by default the money are flowing from income to the other categores.
 # 3. However, positive income or negative expenses/assets/liabilities would be correctly treated as money flowing against the "usual" direction
-def to_sankey_data(balances, income_pattern=INCOME_ACCOUNT_PAT, expense_pattern=EXPENSE_ACCOUNT_PAT,
-                   asset_pattern=ASSET_ACCOUNT_PAT, liability_pattern=LIABILITY_ACCOUNT_PAT,
+def to_sankey_data(balances, income_top_level=INCOME_TOP_LEVEL_ACCOUNT, expense_top_level=EXPENSE_TOP_LEVEL_ACCOUNT,
+                   asset_top_level=ASSET_TOP_LEVEL_ACCOUNT, liability_top_level=LIABILITY_TOP_LEVEL_ACCOUNT,
                    other_categories=None):
     # List to store (source, target, value) tuples
     sankey_data = []
@@ -197,7 +197,7 @@ def to_sankey_data(balances, income_pattern=INCOME_ACCOUNT_PAT, expense_pattern=
     # Build list of top-level categories for checking
     if other_categories is None:
         other_categories = []
-    toplevel_categories = [income_pattern, expense_pattern, asset_pattern, liability_pattern] + other_categories
+    toplevel_categories = [income_top_level, expense_top_level, asset_top_level, liability_top_level] + other_categories
 
     # Convert report to sankey data
     for account_name, balance in balances:
@@ -211,7 +211,7 @@ def to_sankey_data(balances, income_pattern=INCOME_ACCOUNT_PAT, expense_pattern=
                 raise Exception(f'for account {account_name}, parent account {parent_acc} not found - have you forgotten --no-elide?')
 
         # income and virtual flow 'up'
-        if income_pattern in account_name or 'virtual' in account_name:
+        if income_top_level in account_name or 'virtual' in account_name:
             # Negative income is just income, positive income is a reduction, pay-back or something similar
             # For sankey, all flow values should be positive
             if balance < 0:
@@ -256,9 +256,9 @@ def sankey_plot(sankey_data):
 
     return fig
 
-def expenses_treemap_plot(balances, expense_pattern=EXPENSE_ACCOUNT_PAT):
+def expenses_treemap_plot(balances, expense_top_level=EXPENSE_TOP_LEVEL_ACCOUNT):
     # Filter to only expenses
-    expenses = [(name, value) for name, value in balances if expense_pattern in name]
+    expenses = [(name, value) for name, value in balances if expense_top_level in name]
 
     labels = [name for name, _ in expenses]
     values = [value for _, value in expenses]
@@ -356,44 +356,44 @@ with st.sidebar:
 
     generate_button = st.button("Generate Visualizations", type="primary")
 
-    st.subheader("Account Patterns")
-    st.caption("Customize account category patterns for matching")
+    st.subheader("Top-Level Accounts")
+    st.caption("Customize top-level account names for categorization")
 
     # Get default values from config with fallbacks
-    default_income = get_config_value(config, 'patterns', 'income', INCOME_ACCOUNT_PAT)
-    default_expense = get_config_value(config, 'patterns', 'expense', EXPENSE_ACCOUNT_PAT)
-    default_asset = get_config_value(config, 'patterns', 'asset', ASSET_ACCOUNT_PAT)
-    default_liability = get_config_value(config, 'patterns', 'liability', LIABILITY_ACCOUNT_PAT)
-    default_other = get_config_value(config, 'patterns', 'other', 'revenues, virtual')
+    default_income = get_config_value(config, 'top_level', 'income', INCOME_TOP_LEVEL_ACCOUNT)
+    default_expense = get_config_value(config, 'top_level', 'expense', EXPENSE_TOP_LEVEL_ACCOUNT)
+    default_asset = get_config_value(config, 'top_level', 'asset', ASSET_TOP_LEVEL_ACCOUNT)
+    default_liability = get_config_value(config, 'top_level', 'liability', LIABILITY_TOP_LEVEL_ACCOUNT)
+    default_other = get_config_value(config, 'top_level', 'other', 'revenues, virtual')
 
-    income_pattern = st.text_input(
-        "Income Account Pattern",
+    income_top_level = st.text_input(
+        "Income Top-Level Account",
         value=default_income,
-        help="Pattern to match income accounts"
+        help="Top-level account name for income (e.g., 'income')"
     )
 
-    expense_pattern = st.text_input(
-        "Expense Account Pattern",
+    expense_top_level = st.text_input(
+        "Expense Top-Level Account",
         value=default_expense,
-        help="Pattern to match expense accounts"
+        help="Top-level account name for expenses (e.g., 'expenses')"
     )
 
-    asset_pattern = st.text_input(
-        "Asset Account Pattern",
+    asset_top_level = st.text_input(
+        "Asset Top-Level Account",
         value=default_asset,
-        help="Pattern to match asset accounts"
+        help="Top-level account name for assets (e.g., 'assets')"
     )
 
-    liability_pattern = st.text_input(
-        "Liability Account Pattern",
+    liability_top_level = st.text_input(
+        "Liability Top-Level Account",
         value=default_liability,
-        help="Pattern to match liability accounts"
+        help="Top-level account name for liabilities (e.g., 'liabilities')"
     )
 
     other_categories = st.text_input(
-        "Other Top-Level Categories",
+        "Other Top-Level Accounts",
         value=default_other,
-        help="Comma-separated list of other top-level account categories"
+        help="Comma-separated list of other top-level account names"
     )
 
 # Main content
@@ -402,7 +402,7 @@ if generate_button:
         st.error("Please provide a path to your hledger journal file")
     else:
         # Save current configuration
-        save_config(filename, commodity, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_categories)
+        save_config(filename, commodity, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_categories)
 
         try:
             with st.spinner("Generating visualizations..."):
@@ -410,22 +410,22 @@ if generate_button:
                 other_cats = [cat.strip() for cat in other_categories.split(',') if cat.strip()]
 
                 # Sankey graph for all balances/flows
-                all_pat = income_pattern + ' ' + expense_pattern + ' ' + asset_pattern + ' ' + liability_pattern
+                all_pat = income_top_level + ' ' + expense_top_level + ' ' + asset_top_level + ' ' + liability_top_level
                 all_balances = read_current_balances(filename, all_pat, commodity, start_date, end_date)
-                all_balances_sankey = to_sankey_data(all_balances, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_cats)
+                all_balances_sankey = to_sankey_data(all_balances, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
                 all_balances_fig = sankey_plot(all_balances_sankey)
 
                 # Sankey graph for just income/expenses
-                income_expenses_pat = income_pattern + ' ' + expense_pattern
+                income_expenses_pat = income_top_level + ' ' + expense_top_level
                 income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
-                income_expenses_sankey = to_sankey_data(income_expenses, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_cats)
+                income_expenses_sankey = to_sankey_data(income_expenses, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
                 income_expenses_fig = sankey_plot(income_expenses_sankey)
 
                 # Expenses treemap plot for just expenses
-                expenses_fig = expenses_treemap_plot(income_expenses, expense_pattern)
+                expenses_fig = expenses_treemap_plot(income_expenses, expense_top_level)
 
                 # Historical balances plot
-                historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_cats)
+                historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
                 historical_fig = historical_balances_plot(historical_data)
 
                 # Display all graphs
