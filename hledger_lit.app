@@ -449,6 +449,7 @@ if generate_button:
                 st.success("Visualizations generated successfully!")
 
                 st.header("Historical Account Balances")
+                st.caption("💡 Tip: Click legend items to show/hide lines, double-click to isolate a single line")
                 st.plotly_chart(historical_fig, width='stretch')
 
                 st.header("Expenses Treemap")
