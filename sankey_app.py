@@ -12,10 +12,11 @@ ASSET_ACCOUNT_PAT     = 'assets'
 LIABILITY_ACCOUNT_PAT = 'liabilities'
 INCOME_ACCOUNT_PAT    = 'income'
 EXPENSE_ACCOUNT_PAT   = 'expenses'
+OTHER_TOPLEVEL = ['revenues','virtual']
 
 # Toplevel account categories that you have in your chart of accounts.
 # Used to filter out non-account entries from the JSON balance report
-TOPLEVEL_ACCOUNT_CATEGORIES=[INCOME_ACCOUNT_PAT,EXPENSE_ACCOUNT_PAT,ASSET_ACCOUNT_PAT,LIABILITY_ACCOUNT_PAT,'revenues','virtual']
+TOPLEVEL_ACCOUNT_CATEGORIES=[INCOME_ACCOUNT_PAT,EXPENSE_ACCOUNT_PAT,ASSET_ACCOUNT_PAT,LIABILITY_ACCOUNT_PAT] + OTHER_TOPLEVEL
 
 HLEDGER_EXTRA_ARGS = ''
 
@@ -72,10 +73,16 @@ def read_current_balances(filename, account_categories, commodity, start_date=No
 
     return balances
 
-def read_historical_balances(filename, commodity, start_date=None, end_date=None):
+def read_historical_balances(filename, commodity, start_date=None, end_date=None,
+                            income_pattern=INCOME_ACCOUNT_PAT, expense_pattern=EXPENSE_ACCOUNT_PAT,
+                            asset_pattern=ASSET_ACCOUNT_PAT, liability_pattern=LIABILITY_ACCOUNT_PAT,
+                            other_categories=None):
     """Read historical daily cumulative balances for all top-level account categories."""
-    # Build command for historical balances
-    account_categories = ' '.join(TOPLEVEL_ACCOUNT_CATEGORIES)
+    # Build list of account categories including user-provided patterns
+    if other_categories is None:
+        other_categories = []
+    toplevel_categories = [income_pattern, expense_pattern, asset_pattern, liability_pattern] + other_categories
+    account_categories = ' '.join(toplevel_categories)
     command = f'hledger -f {filename} balance {account_categories} not:tag:clopen --depth 1 --period daily --historical --value=then,{commodity} --infer-value -O json'
 
     # Add date range if provided
@@ -97,7 +104,7 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
     for row in data['prRows']:
         account_name = row['prrName']
         # Only include accounts that match our top-level categories
-        if account_name in TOPLEVEL_ACCOUNT_CATEGORIES:
+        if account_name in toplevel_categories:
             # Extract floating point values from each period and apply abs()
             account_balances = []
             for amount_list in row['prrAmounts']:
@@ -112,12 +119,12 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
             balances[account_name] = account_balances
 
     # Calculate net worth as assets - liabilities
-    if ASSET_ACCOUNT_PAT in balances and LIABILITY_ACCOUNT_PAT in balances:
+    if asset_pattern in balances and liability_pattern in balances:
         net_worth = [assets - liabilities
-                     for assets, liabilities in zip(balances[ASSET_ACCOUNT_PAT], balances[LIABILITY_ACCOUNT_PAT])]
+                     for assets, liabilities in zip(balances[asset_pattern], balances[liability_pattern])]
         balances['net_worth'] = net_worth
-    elif ASSET_ACCOUNT_PAT in balances:
-        balances['net_worth'] = balances[ASSET_ACCOUNT_PAT][:]
+    elif asset_pattern in balances:
+        balances['net_worth'] = balances[asset_pattern][:]
 
     return {'dates': dates, 'balances': balances}
 
@@ -128,18 +135,25 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
 # 2. For sankey diagram, we want to see how "income" is being used to cover "expenses", increas the value of "assets" and pay off "liabilities", so we assume that
 #    by default the money are flowing from income to the other categores.
 # 3. However, positive income or negative expenses/assets/liabilities would be correctly treated as money flowing against the "usual" direction
-def to_sankey_data(balances):
+def to_sankey_data(balances, income_pattern=INCOME_ACCOUNT_PAT, expense_pattern=EXPENSE_ACCOUNT_PAT,
+                   asset_pattern=ASSET_ACCOUNT_PAT, liability_pattern=LIABILITY_ACCOUNT_PAT,
+                   other_categories=None):
     # List to store (source, target, value) tuples
     sankey_data = []
 
     # A set of all accounts mentioned in the report, to check that parent accounts have known balance
     accounts = set(account_name for account_name, _ in balances)
 
+    # Build list of top-level categories for checking
+    if other_categories is None:
+        other_categories = []
+    toplevel_categories = [income_pattern, expense_pattern, asset_pattern, liability_pattern] + other_categories
+
     # Convert report to sankey data
     for account_name, balance in balances:
         # top-level accounts need to be connected to the special "pot" intermediate bucket
         # We assume that "income" and "virtual" accounts contribute to pot, while expenses draw from it
-        if account_name in TOPLEVEL_ACCOUNT_CATEGORIES:
+        if account_name in toplevel_categories:
             parent_acc = 'pot'
         else:
             parent_acc = parent(account_name)
@@ -147,7 +161,7 @@ def to_sankey_data(balances):
                 raise Exception(f'for account {account_name}, parent account {parent_acc} not found - have you forgotten --no-elide?')
 
         # income and virtual flow 'up'
-        if INCOME_ACCOUNT_PAT in account_name or 'virtual' in account_name:
+        if income_pattern in account_name or 'virtual' in account_name:
             # Negative income is just income, positive income is a reduction, pay-back or something similar
             # For sankey, all flow values should be positive
             if balance < 0:
@@ -192,9 +206,9 @@ def sankey_plot(sankey_data):
 
     return fig
 
-def expenses_treemap_plot(balances):
+def expenses_treemap_plot(balances, expense_pattern=EXPENSE_ACCOUNT_PAT):
     # Filter to only expenses
-    expenses = [(name, value) for name, value in balances if EXPENSE_ACCOUNT_PAT in name]
+    expenses = [(name, value) for name, value in balances if expense_pattern in name]
 
     labels = [name for name, _ in expenses]
     values = [value for _, value in expenses]
@@ -285,6 +299,39 @@ with st.sidebar:
 
     generate_button = st.button("Generate Visualizations", type="primary")
 
+    st.subheader("Account Patterns")
+    st.caption("Customize account category patterns for matching")
+
+    income_pattern = st.text_input(
+        "Income Account Pattern",
+        value=INCOME_ACCOUNT_PAT,
+        help="Pattern to match income accounts"
+    )
+
+    expense_pattern = st.text_input(
+        "Expense Account Pattern",
+        value=EXPENSE_ACCOUNT_PAT,
+        help="Pattern to match expense accounts"
+    )
+
+    asset_pattern = st.text_input(
+        "Asset Account Pattern",
+        value=ASSET_ACCOUNT_PAT,
+        help="Pattern to match asset accounts"
+    )
+
+    liability_pattern = st.text_input(
+        "Liability Account Pattern",
+        value=LIABILITY_ACCOUNT_PAT,
+        help="Pattern to match liability accounts"
+    )
+
+    other_categories = st.text_input(
+        "Other Top-Level Categories",
+        value="revenues, virtual",
+        help="Comma-separated list of other top-level account categories"
+    )
+
 # Main content
 if generate_button:
     if not filename:
@@ -292,23 +339,26 @@ if generate_button:
     else:
         try:
             with st.spinner("Generating visualizations..."):
+                # Parse other categories (comma-separated list)
+                other_cats = [cat.strip() for cat in other_categories.split(',') if cat.strip()]
+
                 # Sankey graph for all balances/flows
-                all_pat = INCOME_ACCOUNT_PAT + ' ' + EXPENSE_ACCOUNT_PAT + ' ' + ASSET_ACCOUNT_PAT + ' ' + LIABILITY_ACCOUNT_PAT
+                all_pat = income_pattern + ' ' + expense_pattern + ' ' + asset_pattern + ' ' + liability_pattern
                 all_balances = read_current_balances(filename, all_pat, commodity, start_date, end_date)
-                all_balances_sankey = to_sankey_data(all_balances)
+                all_balances_sankey = to_sankey_data(all_balances, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_cats)
                 all_balances_fig = sankey_plot(all_balances_sankey)
 
                 # Sankey graph for just income/expenses
-                income_expenses_pat = INCOME_ACCOUNT_PAT + ' ' + EXPENSE_ACCOUNT_PAT
+                income_expenses_pat = income_pattern + ' ' + expense_pattern
                 income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
-                income_expenses_sankey = to_sankey_data(income_expenses)
+                income_expenses_sankey = to_sankey_data(income_expenses, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_cats)
                 income_expenses_fig = sankey_plot(income_expenses_sankey)
 
                 # Expenses treemap plot for just expenses
-                expenses_fig = expenses_treemap_plot(income_expenses)
+                expenses_fig = expenses_treemap_plot(income_expenses, expense_pattern)
 
                 # Historical balances plot
-                historical_data = read_historical_balances(filename, commodity, start_date, end_date)
+                historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_cats)
                 historical_fig = historical_balances_plot(historical_data)
 
                 # Display all graphs
