@@ -57,6 +57,12 @@ def save_config(filename, commodity, income_top_level, expense_top_level, asset_
     with open(config_path, 'w') as configfile:
         config.write(configfile)
 
+def reset_config():
+    """Delete the config file to reset to defaults."""
+    config_path = get_config_path()
+    if config_path.exists():
+        config_path.unlink()
+
 # Top-level account names for recognising account types
 ASSET_TOP_LEVEL_ACCOUNT     = 'assets'
 LIABILITY_TOP_LEVEL_ACCOUNT = 'liabilities'
@@ -356,6 +362,10 @@ with st.sidebar:
 
     generate_button = st.button("Generate Visualizations", type="primary")
 
+    save_config_button = st.button("Save Config")
+
+    reset_config_button = st.button("Reset to Defaults")
+
     st.subheader("Top-Level Accounts")
     st.caption("Customize top-level account names for categorization")
 
@@ -396,14 +406,21 @@ with st.sidebar:
         help="Comma-separated list of other top-level account names"
     )
 
+# Handle Save Config button
+if save_config_button:
+    save_config(filename, commodity, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_categories)
+    st.success(f"Configuration saved to {get_config_path()}")
+
+# Handle Reset to Defaults button
+if reset_config_button:
+    reset_config()
+    st.success("Configuration reset to defaults. Please refresh the page to see the changes.")
+
 # Main content
 if generate_button:
     if not filename:
         st.error("Please provide a path to your hledger journal file")
     else:
-        # Save current configuration
-        save_config(filename, commodity, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_categories)
-
         try:
             with st.spinner("Generating visualizations..."):
                 # Parse other categories (comma-separated list)
