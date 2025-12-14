@@ -312,10 +312,10 @@ def historical_balances_plot(historical_data):
 
 
 # Streamlit App
-st.set_page_config(page_title="HLedger Sankey Visualizer", layout="wide")
+st.set_page_config(page_title="'HLedger is Lit!' Visualizer", layout="wide")
 
-st.title("HLedger Cash Flow Visualizer")
-st.markdown("Generate Sankey diagrams and treemaps from hledger balance reports")
+st.title("'HLedger is Lit!' Visualizer")
+st.markdown("Generate graphs from hledger balance reports")
 
 # Load configuration
 config = load_config()
@@ -437,7 +437,7 @@ if generate_button:
                 st.header("Expenses Treemap")
                 st.plotly_chart(expenses_fig, width='stretch')
 
-                st.header("Income & Expenses Flow")
+                st.header("Income & Expenses Flows")
                 st.plotly_chart(income_expenses_fig, width='stretch')
 
                 st.header("All Cash Flows")
