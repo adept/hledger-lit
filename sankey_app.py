@@ -2,10 +2,60 @@ import json
 import os
 import subprocess
 from datetime import datetime, date
+from pathlib import Path
+import configparser
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pprint import pformat
+
+# Config file handling
+def get_config_path():
+    """Get the path to the config file."""
+    config_home = os.environ.get('XDG_CONFIG_HOME')
+    if not config_home:
+        config_home = os.path.join(os.path.expanduser('~'), '.config')
+    config_dir = Path(config_home)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir / 'hledger-lit.conf'
+
+def load_config():
+    """Load configuration from config file."""
+    config = configparser.ConfigParser()
+    config_path = get_config_path()
+    if config_path.exists():
+        config.read(config_path)
+    return config
+
+def get_config_value(config, section, key, default):
+    """Get a config value with fallback to default."""
+    try:
+        return config.get(section, key)
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        return default
+
+def save_config(filename, commodity, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_categories):
+    """Save current configuration to config file."""
+    config = configparser.ConfigParser()
+
+    # Create sections
+    config['settings'] = {
+        'filename': filename,
+        'commodity': commodity
+    }
+
+    config['patterns'] = {
+        'income': income_pattern,
+        'expense': expense_pattern,
+        'asset': asset_pattern,
+        'liability': liability_pattern,
+        'other': other_categories
+    }
+
+    # Write to file
+    config_path = get_config_path()
+    with open(config_path, 'w') as configfile:
+        config.write(configfile)
 
 # Account name substrings for recognising account types
 ASSET_ACCOUNT_PAT     = 'assets'
@@ -267,19 +317,26 @@ st.set_page_config(page_title="HLedger Sankey Visualizer", layout="wide")
 st.title("HLedger Cash Flow Visualizer")
 st.markdown("Generate Sankey diagrams and treemaps from hledger balance reports")
 
+# Load configuration
+config = load_config()
+
 # Sidebar for inputs
 with st.sidebar:
     st.header("Configuration")
 
+    # Get default values from config with fallbacks
+    default_filename = get_config_value(config, 'settings', 'filename', os.environ.get('LEDGER_FILE', ''))
+    default_commodity = get_config_value(config, 'settings', 'commodity', '£')
+
     filename = st.text_input(
         "HLedger Journal File Path",
-        value=os.environ.get('LEDGER_FILE', ''),
+        value=default_filename,
         help="Path to your hledger journal file"
     )
 
     commodity = st.text_input(
         "Commodity",
-        value="£",
+        value=default_commodity,
         help="Commodity to convert all values to"
     )
 
@@ -302,33 +359,40 @@ with st.sidebar:
     st.subheader("Account Patterns")
     st.caption("Customize account category patterns for matching")
 
+    # Get default values from config with fallbacks
+    default_income = get_config_value(config, 'patterns', 'income', INCOME_ACCOUNT_PAT)
+    default_expense = get_config_value(config, 'patterns', 'expense', EXPENSE_ACCOUNT_PAT)
+    default_asset = get_config_value(config, 'patterns', 'asset', ASSET_ACCOUNT_PAT)
+    default_liability = get_config_value(config, 'patterns', 'liability', LIABILITY_ACCOUNT_PAT)
+    default_other = get_config_value(config, 'patterns', 'other', 'revenues, virtual')
+
     income_pattern = st.text_input(
         "Income Account Pattern",
-        value=INCOME_ACCOUNT_PAT,
+        value=default_income,
         help="Pattern to match income accounts"
     )
 
     expense_pattern = st.text_input(
         "Expense Account Pattern",
-        value=EXPENSE_ACCOUNT_PAT,
+        value=default_expense,
         help="Pattern to match expense accounts"
     )
 
     asset_pattern = st.text_input(
         "Asset Account Pattern",
-        value=ASSET_ACCOUNT_PAT,
+        value=default_asset,
         help="Pattern to match asset accounts"
     )
 
     liability_pattern = st.text_input(
         "Liability Account Pattern",
-        value=LIABILITY_ACCOUNT_PAT,
+        value=default_liability,
         help="Pattern to match liability accounts"
     )
 
     other_categories = st.text_input(
         "Other Top-Level Categories",
-        value="revenues, virtual",
+        value=default_other,
         help="Comma-separated list of other top-level account categories"
     )
 
@@ -337,6 +401,9 @@ if generate_button:
     if not filename:
         st.error("Please provide a path to your hledger journal file")
     else:
+        # Save current configuration
+        save_config(filename, commodity, income_pattern, expense_pattern, asset_pattern, liability_pattern, other_categories)
+
         try:
             with st.spinner("Generating visualizations..."):
                 # Parse other categories (comma-separated list)
