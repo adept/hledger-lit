@@ -331,13 +331,13 @@ with st.sidebar:
     filename = st.text_input(
         "HLedger Journal File Path",
         value=default_filename,
-        help="Path to your hledger journal file"
+        help="Path to your hledger journal file, defaults to $LEDGER_FILE"
     )
 
     commodity = st.text_input(
         "Commodity",
         value=default_commodity,
-        help="Commodity to convert all values to"
+        help="Commodity to convert all values to (via -value=then,{commodity})"
     )
 
     # Date range inputs
