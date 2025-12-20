@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, date
 from pathlib import Path
@@ -87,17 +88,15 @@ def run_hledger_command(command):
     process_output = subprocess.run(command.split(' '), stdout=subprocess.PIPE, text=True).stdout
     return json.loads(process_output)
 
-def read_current_balances(filename, account_categories, commodity, start_date=None, end_date=None):
-    # You might want to try just "income expenses" as account categories, or less depth via "--depth 2"
+def read_current_balances(filename, account_regex, commodity, start_date=None, end_date=None):
     # Explanation for the choice of arguments:
-    # "balance income expenses assets liabilities" are account categories
-    # "not:desc:opening" excludes year-open transaction which carries over values of assets from the previous year, as we are only interested in asset increases, not
-    #     absolute value
+    # "balance <account_regex>" - regex pattern to match accounts (e.g., "income|expenses|assets|liabilities")
+    # "not:tag:clopen" excludes closing/opening transactions
     # "--cost --value=then,<commodity> --infer-value" - convert everything to a single commodity
     # "--no-total" - ensure that we dont have a total row
     # "--tree --no-elide" - ensure that parent accounts are listed even if they dont have balance changes, to make sure that our sankey flows dont have gaps
     # "-O json" to produce JSON output
-    command = 'hledger -f %s balance %s not:desc:opening --cost --value=then,%s --infer-value --no-total --tree --no-elide -O json' % (filename, account_categories, commodity)
+    command = f'hledger -f {filename} balance {account_regex} not:tag:clopen --cost --value=then,{commodity} --infer-value --no-total --tree --no-elide -O json'
 
     # Add date range if provided
     if start_date:
@@ -113,12 +112,17 @@ def read_current_balances(filename, account_categories, commodity, start_date=No
     # First element of the JSON array contains the account entries
     accounts = data[0]
 
+    # Convert space-separated patterns to regex OR pattern
+    # e.g., "income expenses" becomes "income|expenses"
+    regex_string = '|'.join(account_regex.split())
+    regex_pattern = re.compile(regex_string)
+
     # Build list of (account_name, balance) tuples
     balances = []
     for entry in accounts:
         account_name = entry[0]
-        # Filter to only include accounts that match our top-level categories
-        if any(cat in account_name for cat in TOPLEVEL_ACCOUNT_CATEGORIES):
+        # Filter to only include accounts that match the regex pattern
+        if regex_pattern.search(account_name):
             # Get the balance from the amounts array (entry[3])
             amounts = entry[3]
             if amounts:
