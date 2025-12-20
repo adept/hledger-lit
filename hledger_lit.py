@@ -35,7 +35,7 @@ def get_config_value(config, section, key, default):
     except (configparser.NoSectionError, configparser.NoOptionError):
         return default
 
-def save_config(filename, commodity, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_categories):
+def save_config(filename, commodity, income_regex, expense_regex, asset_regex, liability_regex):
     """Save current configuration to config file."""
     config = configparser.ConfigParser()
 
@@ -45,12 +45,11 @@ def save_config(filename, commodity, income_top_level, expense_top_level, asset_
         'commodity': commodity
     }
 
-    config['top_level'] = {
-        'income': income_top_level,
-        'expense': expense_top_level,
-        'asset': asset_top_level,
-        'liability': liability_top_level,
-        'other': other_categories
+    config['regex'] = {
+        'income': income_regex,
+        'expense': expense_regex,
+        'asset': asset_regex,
+        'liability': liability_regex,
     }
 
     # Write to file
@@ -64,16 +63,15 @@ def reset_config():
     if config_path.exists():
         config_path.unlink()
 
-# Top-level account names for recognising account types
-ASSET_TOP_LEVEL_ACCOUNT     = 'assets'
-LIABILITY_TOP_LEVEL_ACCOUNT = 'liabilities'
-INCOME_TOP_LEVEL_ACCOUNT    = 'income'
-EXPENSE_TOP_LEVEL_ACCOUNT   = 'expenses'
-OTHER_TOPLEVEL = ['revenues','virtual']
+# Regular expressions for matching account types
+ASSET_REGEX     = 'assets'
+LIABILITY_REGEX = 'liabilities'
+INCOME_REGEX    = 'income|virtual|revenues'
+EXPENSE_REGEX   = 'expenses'
 
-# Toplevel account categories that you have in your chart of accounts.
+# Account regex patterns for your chart of accounts
 # Used to filter out non-account entries from the JSON balance report
-TOPLEVEL_ACCOUNT_CATEGORIES=[INCOME_TOP_LEVEL_ACCOUNT,EXPENSE_TOP_LEVEL_ACCOUNT,ASSET_TOP_LEVEL_ACCOUNT,LIABILITY_TOP_LEVEL_ACCOUNT] + OTHER_TOPLEVEL
+TOPLEVEL_ACCOUNT_CATEGORIES=[INCOME_REGEX,EXPENSE_REGEX,ASSET_REGEX,LIABILITY_REGEX]
 
 HLEDGER_EXTRA_ARGS = ''
 
@@ -134,15 +132,11 @@ def read_current_balances(filename, account_regex, commodity, start_date=None, e
     return balances
 
 def read_historical_balances(filename, commodity, start_date=None, end_date=None,
-                            income_top_level=INCOME_TOP_LEVEL_ACCOUNT, expense_top_level=EXPENSE_TOP_LEVEL_ACCOUNT,
-                            asset_top_level=ASSET_TOP_LEVEL_ACCOUNT, liability_top_level=LIABILITY_TOP_LEVEL_ACCOUNT,
-                            other_categories=None):
-    """Read historical daily cumulative balances for all top-level account categories."""
-    # Build list of account categories including user-provided top-level accounts
-    if other_categories is None:
-        other_categories = []
-    toplevel_categories = [income_top_level, expense_top_level, asset_top_level, liability_top_level] + other_categories
-    account_categories = ' '.join(toplevel_categories)
+                            income_regex=INCOME_REGEX, expense_regex=EXPENSE_REGEX,
+                            asset_regex=ASSET_REGEX, liability_regex=LIABILITY_REGEX):
+    """Read historical daily cumulative balances for accounts matching regex patterns."""
+    # Build list of account regex patterns
+    account_categories = ' '.join([income_regex, expense_regex, asset_regex, liability_regex])
     command = f'hledger -f {filename} balance {account_categories} not:tag:clopen --depth 1 --period daily --historical --value=then,{commodity} --infer-value -O json'
 
     # Add date range if provided
@@ -159,12 +153,15 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
     # Extract dates from prDates - use the start date of each period
     dates = [period[0]['contents'] for period in data['prDates']]
 
+    # Compile regex patterns for matching
+    account_patterns = re.compile('|'.join(account_categories.split()))
+
     # Extract balances for each account
     balances = {}
     for row in data['prRows']:
         account_name = row['prrName']
-        # Only include accounts that match our top-level categories
-        if account_name in toplevel_categories:
+        # Only include accounts that match our regex patterns
+        if account_patterns.search(account_name):
             # Extract floating point values from each period and apply abs()
             account_balances = []
             for amount_list in row['prrAmounts']:
@@ -179,12 +176,22 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
             balances[account_name] = account_balances
 
     # Calculate net worth as assets - liabilities
-    if asset_top_level in balances and liability_top_level in balances:
-        net_worth = [assets - liabilities
-                     for assets, liabilities in zip(balances[asset_top_level], balances[liability_top_level])]
+    # Find the actual account names that match our asset and liability regexes
+    asset_pattern = re.compile('|'.join(asset_regex.split()))
+    liability_pattern = re.compile('|'.join(liability_regex.split()))
+
+    asset_accounts = [acc for acc in balances.keys() if asset_pattern.search(acc)]
+    liability_accounts = [acc for acc in balances.keys() if liability_pattern.search(acc)]
+
+    if asset_accounts and liability_accounts:
+        # Sum all matching asset and liability accounts for net worth calculation
+        asset_totals = [sum(balances[acc][i] for acc in asset_accounts) for i in range(len(dates))]
+        liability_totals = [sum(balances[acc][i] for acc in liability_accounts) for i in range(len(dates))]
+        net_worth = [assets - liabilities for assets, liabilities in zip(asset_totals, liability_totals)]
         balances['net_worth'] = net_worth
-    elif asset_top_level in balances:
-        balances['net_worth'] = balances[asset_top_level][:]
+    elif asset_accounts:
+        asset_totals = [sum(balances[acc][i] for acc in asset_accounts) for i in range(len(dates))]
+        balances['net_worth'] = asset_totals
 
     return {'dates': dates, 'balances': balances}
 
@@ -195,33 +202,30 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
 # 2. For sankey diagram, we want to see how "income" is being used to cover "expenses", increas the value of "assets" and pay off "liabilities", so we assume that
 #    by default the money are flowing from income to the other categores.
 # 3. However, positive income or negative expenses/assets/liabilities would be correctly treated as money flowing against the "usual" direction
-def to_sankey_data(balances, income_top_level=INCOME_TOP_LEVEL_ACCOUNT, expense_top_level=EXPENSE_TOP_LEVEL_ACCOUNT,
-                   asset_top_level=ASSET_TOP_LEVEL_ACCOUNT, liability_top_level=LIABILITY_TOP_LEVEL_ACCOUNT,
-                   other_categories=None):
+def to_sankey_data(balances, income_regex=INCOME_REGEX, expense_regex=EXPENSE_REGEX,
+                   asset_regex=ASSET_REGEX, liability_regex=LIABILITY_REGEX):
     # List to store (source, target, value) tuples
     sankey_data = []
 
     # A set of all accounts mentioned in the report, to check that parent accounts have known balance
     accounts = set(account_name for account_name, _ in balances)
 
-    # Build list of top-level categories for checking
-    if other_categories is None:
-        other_categories = []
-    toplevel_categories = [income_top_level, expense_top_level, asset_top_level, liability_top_level] + other_categories
+    # Compile regex pattern for income matching
+    income_pattern = re.compile('|'.join(income_regex.split()))
 
     # Convert report to sankey data
     for account_name, balance in balances:
         # top-level accounts need to be connected to the special "pot" intermediate bucket
-        # We assume that "income" and "virtual" accounts contribute to pot, while expenses draw from it
-        if account_name in toplevel_categories:
+        # We assume that income accounts (including virtual, revenues) contribute to pot, while expenses draw from it
+        if ':' not in account_name:
             parent_acc = 'pot'
         else:
             parent_acc = parent(account_name)
             if parent_acc not in accounts:
                 raise Exception(f'for account {account_name}, parent account {parent_acc} not found - have you forgotten --no-elide?')
 
-        # income and virtual flow 'up'
-        if income_top_level in account_name or 'virtual' in account_name:
+        # income accounts flow 'up'
+        if income_pattern.search(account_name):
             # Negative income is just income, positive income is a reduction, pay-back or something similar
             # For sankey, all flow values should be positive
             if balance < 0:
@@ -366,49 +370,42 @@ with st.sidebar:
 
     reset_config_button = st.button("Reset to Defaults")
 
-    st.subheader("Top-Level Accounts")
-    st.caption("Customize top-level account names for categorization")
+    st.subheader("Account Regex Patterns")
+    st.caption("Regular expressions for matching account categories")
 
     # Get default values from config with fallbacks
-    default_income = get_config_value(config, 'top_level', 'income', INCOME_TOP_LEVEL_ACCOUNT)
-    default_expense = get_config_value(config, 'top_level', 'expense', EXPENSE_TOP_LEVEL_ACCOUNT)
-    default_asset = get_config_value(config, 'top_level', 'asset', ASSET_TOP_LEVEL_ACCOUNT)
-    default_liability = get_config_value(config, 'top_level', 'liability', LIABILITY_TOP_LEVEL_ACCOUNT)
-    default_other = get_config_value(config, 'top_level', 'other', 'revenues, virtual')
+    default_income = get_config_value(config, 'regex', 'income', INCOME_REGEX)
+    default_expense = get_config_value(config, 'regex', 'expense', EXPENSE_REGEX)
+    default_asset = get_config_value(config, 'regex', 'asset', ASSET_REGEX)
+    default_liability = get_config_value(config, 'regex', 'liability', LIABILITY_REGEX)
 
-    income_top_level = st.text_input(
-        "Income Top-Level Account",
+    income_regex = st.text_input(
+        "Income Regex",
         value=default_income,
-        help="Top-level account name for income (e.g., 'income')"
+        help="Regex to match income accounts (e.g., 'income'). Multiple patterns can be separated by space or '|'"
     )
 
-    expense_top_level = st.text_input(
-        "Expense Top-Level Account",
+    expense_regex = st.text_input(
+        "Expense Regex",
         value=default_expense,
-        help="Top-level account name for expenses (e.g., 'expenses')"
+        help="Regex to match expense accounts (e.g., 'expenses'). Multiple patterns can be separated by space or '|'"
     )
 
-    asset_top_level = st.text_input(
-        "Asset Top-Level Account",
+    asset_regex = st.text_input(
+        "Asset Regex",
         value=default_asset,
-        help="Top-level account name for assets (e.g., 'assets')"
+        help="Regex to match asset accounts (e.g., 'assets'). Multiple patterns can be separated by space or '|'"
     )
 
-    liability_top_level = st.text_input(
-        "Liability Top-Level Account",
+    liability_regex = st.text_input(
+        "Liability Regex",
         value=default_liability,
-        help="Top-level account name for liabilities (e.g., 'liabilities')"
-    )
-
-    other_categories = st.text_input(
-        "Other Top-Level Accounts",
-        value=default_other,
-        help="Comma-separated list of other top-level account names"
+        help="Regex to match liability accounts (e.g., 'liabilities'). Multiple patterns can be separated by space or '|'"
     )
 
 # Handle Save Config button
 if save_config_button:
-    save_config(filename, commodity, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_categories)
+    save_config(filename, commodity, income_regex, expense_regex, asset_regex, liability_regex)
     st.success(f"Configuration saved to {get_config_path()}")
 
 # Handle Reset to Defaults button
@@ -420,9 +417,6 @@ if reset_config_button:
 if not filename:
     st.warning("👈 Please provide a path to your hledger journal file in the sidebar")
     st.stop()
-
-# Parse other categories (comma-separated list)
-other_cats = [cat.strip() for cat in other_categories.split(',') if cat.strip()]
 
 # Initialize session state for storing graphs
 if 'historical_fig' not in st.session_state:
@@ -442,7 +436,7 @@ generate_historical = st.button("Generate Historical Balances", key="gen_histori
 if generate_historical:
     try:
         with st.spinner("Generating historical balances..."):
-            historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
+            historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_regex, expense_regex, asset_regex, liability_regex)
             st.session_state.historical_fig = historical_balances_plot(historical_data)
     except subprocess.CalledProcessError as e:
         st.error(f"Error running hledger command: {e}")
@@ -464,7 +458,7 @@ generate_treemap = st.button("Generate Expenses Treemap", key="gen_treemap")
 if generate_treemap:
     try:
         with st.spinner("Generating expenses treemap..."):
-            expenses = read_current_balances(filename, expense_top_level, commodity, start_date, end_date)
+            expenses = read_current_balances(filename, expense_regex, commodity, start_date, end_date)
             st.session_state.expenses_fig = expenses_treemap_plot(expenses)
     except subprocess.CalledProcessError as e:
         st.error(f"Error running hledger command: {e}")
@@ -486,9 +480,9 @@ generate_income_expenses = st.button("Generate Income & Expenses Flows", key="ge
 if generate_income_expenses:
     try:
         with st.spinner("Generating income & expenses flows..."):
-            income_expenses_pat = income_top_level + ' ' + expense_top_level
+            income_expenses_pat = income_regex + ' ' + expense_regex
             income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
-            income_expenses_sankey = to_sankey_data(income_expenses, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
+            income_expenses_sankey = to_sankey_data(income_expenses, income_regex, expense_regex, asset_regex, liability_regex)
             st.session_state.income_expenses_fig = sankey_plot(income_expenses_sankey)
     except subprocess.CalledProcessError as e:
         st.error(f"Error running hledger command: {e}")
@@ -510,9 +504,9 @@ generate_all_flows = st.button("Generate All Cash Flows", key="gen_all_flows")
 if generate_all_flows:
     try:
         with st.spinner("Generating all cash flows..."):
-            all_pat = income_top_level + ' ' + expense_top_level + ' ' + asset_top_level + ' ' + liability_top_level
+            all_pat = income_regex + ' ' + expense_regex + ' ' + asset_regex + ' ' + liability_regex
             all_balances = read_current_balances(filename, all_pat, commodity, start_date, end_date)
-            all_balances_sankey = to_sankey_data(all_balances, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
+            all_balances_sankey = to_sankey_data(all_balances, income_regex, expense_regex, asset_regex, liability_regex)
             st.session_state.all_balances_fig = sankey_plot(all_balances_sankey)
     except subprocess.CalledProcessError as e:
         st.error(f"Error running hledger command: {e}")
