@@ -266,13 +266,11 @@ def sankey_plot(sankey_data):
 
     return fig
 
-def expenses_treemap_plot(balances, expense_top_level=EXPENSE_TOP_LEVEL_ACCOUNT):
-    # Filter to only expenses
-    expenses = [(name, value) for name, value in balances if expense_top_level in name]
-
-    labels = [name for name, _ in expenses]
-    values = [value for _, value in expenses]
-    parents = [parent(name) for name, _ in expenses]
+def expenses_treemap_plot(balances):
+    # balances already contains only expenses
+    labels = [name for name, _ in balances]
+    values = [value for _, value in balances]
+    parents = [parent(name) for name, _ in balances]
 
     fig = go.Figure(go.Treemap(
         labels=labels,
@@ -466,9 +464,8 @@ generate_treemap = st.button("Generate Expenses Treemap", key="gen_treemap")
 if generate_treemap:
     try:
         with st.spinner("Generating expenses treemap..."):
-            income_expenses_pat = income_top_level + ' ' + expense_top_level
-            income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
-            st.session_state.expenses_fig = expenses_treemap_plot(income_expenses, expense_top_level)
+            expenses = read_current_balances(filename, expense_top_level, commodity, start_date, end_date)
+            st.session_state.expenses_fig = expenses_treemap_plot(expenses)
     except subprocess.CalledProcessError as e:
         st.error(f"Error running hledger command: {e}")
     except json.JSONDecodeError as e:
