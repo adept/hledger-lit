@@ -360,8 +360,6 @@ with st.sidebar:
         help="End date for the report (hledger -e flag)"
     )
 
-    generate_button = st.button("Generate Visualizations", type="primary")
-
     save_config_button = st.button("Save Config")
 
     reset_config_button = st.button("Reset to Defaults")
@@ -416,57 +414,112 @@ if reset_config_button:
     reset_config()
     st.success("Configuration reset to defaults. Please refresh the page to see the changes.")
 
-# Main content
-if generate_button:
-    if not filename:
-        st.error("Please provide a path to your hledger journal file")
-    else:
-        try:
-            with st.spinner("Generating visualizations..."):
-                # Parse other categories (comma-separated list)
-                other_cats = [cat.strip() for cat in other_categories.split(',') if cat.strip()]
+# Check if filename is provided
+if not filename:
+    st.warning("👈 Please provide a path to your hledger journal file in the sidebar")
+    st.stop()
 
-                # Sankey graph for all balances/flows
-                all_pat = income_top_level + ' ' + expense_top_level + ' ' + asset_top_level + ' ' + liability_top_level
-                all_balances = read_current_balances(filename, all_pat, commodity, start_date, end_date)
-                all_balances_sankey = to_sankey_data(all_balances, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
-                all_balances_fig = sankey_plot(all_balances_sankey)
+# Parse other categories (comma-separated list)
+other_cats = [cat.strip() for cat in other_categories.split(',') if cat.strip()]
 
-                # Sankey graph for just income/expenses
-                income_expenses_pat = income_top_level + ' ' + expense_top_level
-                income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
-                income_expenses_sankey = to_sankey_data(income_expenses, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
-                income_expenses_fig = sankey_plot(income_expenses_sankey)
+# Initialize session state for storing graphs
+if 'historical_fig' not in st.session_state:
+    st.session_state.historical_fig = None
+if 'expenses_fig' not in st.session_state:
+    st.session_state.expenses_fig = None
+if 'income_expenses_fig' not in st.session_state:
+    st.session_state.income_expenses_fig = None
+if 'all_balances_fig' not in st.session_state:
+    st.session_state.all_balances_fig = None
 
-                # Expenses treemap plot for just expenses
-                expenses_fig = expenses_treemap_plot(income_expenses, expense_top_level)
+# Historical Account Balances
+st.header("Historical Account Balances")
+st.caption("💡 Tip: Click legend items to show/hide lines, double-click to isolate a single line")
+generate_historical = st.button("Generate Historical Balances", key="gen_historical")
 
-                # Historical balances plot
-                historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
-                historical_fig = historical_balances_plot(historical_data)
+if generate_historical:
+    try:
+        with st.spinner("Generating historical balances..."):
+            historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
+            st.session_state.historical_fig = historical_balances_plot(historical_data)
+    except subprocess.CalledProcessError as e:
+        st.error(f"Error running hledger command: {e}")
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing JSON output: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
+        st.exception(e)
 
-                # Display all graphs
-                st.success("Visualizations generated successfully!")
+if st.session_state.historical_fig is not None:
+    st.plotly_chart(st.session_state.historical_fig, width='stretch')
 
-                st.header("Historical Account Balances")
-                st.caption("💡 Tip: Click legend items to show/hide lines, double-click to isolate a single line")
-                st.plotly_chart(historical_fig, width='stretch')
+st.divider()
 
-                st.header("Expenses Treemap")
-                st.plotly_chart(expenses_fig, width='stretch')
+# Expenses Treemap
+st.header("Expenses Treemap")
+generate_treemap = st.button("Generate Expenses Treemap", key="gen_treemap")
 
-                st.header("Income & Expenses Flows")
-                st.plotly_chart(income_expenses_fig, width='stretch')
+if generate_treemap:
+    try:
+        with st.spinner("Generating expenses treemap..."):
+            income_expenses_pat = income_top_level + ' ' + expense_top_level
+            income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
+            st.session_state.expenses_fig = expenses_treemap_plot(income_expenses, expense_top_level)
+    except subprocess.CalledProcessError as e:
+        st.error(f"Error running hledger command: {e}")
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing JSON output: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
+        st.exception(e)
 
-                st.header("All Cash Flows")
-                st.plotly_chart(all_balances_fig, width='stretch')
+if st.session_state.expenses_fig is not None:
+    st.plotly_chart(st.session_state.expenses_fig, width='stretch')
 
-        except subprocess.CalledProcessError as e:
-            st.error(f"Error running hledger command: {e}")
-        except json.JSONDecodeError as e:
-            st.error(f"Error parsing JSON output: {e}")
-        except Exception as e:
-            st.error(f"Error: {e}")
-            st.exception(e)
-else:
-    st.info("👈 Configure your settings in the sidebar and click 'Generate Visualizations' to start")
+st.divider()
+
+# Income & Expenses Flows
+st.header("Income & Expenses Flows")
+generate_income_expenses = st.button("Generate Income & Expenses Flows", key="gen_income_expenses")
+
+if generate_income_expenses:
+    try:
+        with st.spinner("Generating income & expenses flows..."):
+            income_expenses_pat = income_top_level + ' ' + expense_top_level
+            income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
+            income_expenses_sankey = to_sankey_data(income_expenses, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
+            st.session_state.income_expenses_fig = sankey_plot(income_expenses_sankey)
+    except subprocess.CalledProcessError as e:
+        st.error(f"Error running hledger command: {e}")
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing JSON output: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
+        st.exception(e)
+
+if st.session_state.income_expenses_fig is not None:
+    st.plotly_chart(st.session_state.income_expenses_fig, width='stretch')
+
+st.divider()
+
+# All Cash Flows
+st.header("All Cash Flows")
+generate_all_flows = st.button("Generate All Cash Flows", key="gen_all_flows")
+
+if generate_all_flows:
+    try:
+        with st.spinner("Generating all cash flows..."):
+            all_pat = income_top_level + ' ' + expense_top_level + ' ' + asset_top_level + ' ' + liability_top_level
+            all_balances = read_current_balances(filename, all_pat, commodity, start_date, end_date)
+            all_balances_sankey = to_sankey_data(all_balances, income_top_level, expense_top_level, asset_top_level, liability_top_level, other_cats)
+            st.session_state.all_balances_fig = sankey_plot(all_balances_sankey)
+    except subprocess.CalledProcessError as e:
+        st.error(f"Error running hledger command: {e}")
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing JSON output: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
+        st.exception(e)
+
+if st.session_state.all_balances_fig is not None:
+    st.plotly_chart(st.session_state.all_balances_fig, width='stretch')
