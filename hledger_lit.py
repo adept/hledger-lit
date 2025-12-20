@@ -152,9 +152,15 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
 
     # Extract dates from prDates - use the start date of each period
     dates = [period[0]['contents'] for period in data['prDates']]
+    num_periods = len(dates)
 
     # Compile regex patterns for matching
     account_patterns = re.compile('|'.join(account_categories.split()))
+    asset_pattern = re.compile('|'.join(asset_regex.split()))
+    liability_pattern = re.compile('|'.join(liability_regex.split()))
+
+    # Initialize net worth tracking
+    net_worth = [0.0] * num_periods
 
     # Extract balances for each account
     balances = {}
@@ -175,23 +181,14 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
                 account_balances.append(balance)
             balances[account_name] = account_balances
 
-    # Calculate net worth as assets - liabilities
-    # Find the actual account names that match our asset and liability regexes
-    asset_pattern = re.compile('|'.join(asset_regex.split()))
-    liability_pattern = re.compile('|'.join(liability_regex.split()))
+            # Update net worth: add assets, subtract liabilities
+            if asset_pattern.search(account_name):
+                net_worth = [nw + bal for nw, bal in zip(net_worth, account_balances)]
+            elif liability_pattern.search(account_name):
+                net_worth = [nw - bal for nw, bal in zip(net_worth, account_balances)]
 
-    asset_accounts = [acc for acc in balances.keys() if asset_pattern.search(acc)]
-    liability_accounts = [acc for acc in balances.keys() if liability_pattern.search(acc)]
-
-    if asset_accounts and liability_accounts:
-        # Sum all matching asset and liability accounts for net worth calculation
-        asset_totals = [sum(balances[acc][i] for acc in asset_accounts) for i in range(len(dates))]
-        liability_totals = [sum(balances[acc][i] for acc in liability_accounts) for i in range(len(dates))]
-        net_worth = [assets - liabilities for assets, liabilities in zip(asset_totals, liability_totals)]
-        balances['net_worth'] = net_worth
-    elif asset_accounts:
-        asset_totals = [sum(balances[acc][i] for acc in asset_accounts) for i in range(len(dates))]
-        balances['net_worth'] = asset_totals
+    # Add net worth to balances
+    balances['net_worth'] = net_worth
 
     return {'dates': dates, 'balances': balances}
 
