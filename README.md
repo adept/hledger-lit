@@ -25,6 +25,8 @@ This should open the app page in your browser. Defaults should be sensible enoug
 
 Repository contains `example.journal` generated out of slighly edited `Cody.journal` from hledger examples. Set the time range to 2021-01-01 to 2021-12-31.
 
-# How would it look like
-[demo video](https://github.com/user-attachments/assets/c08b2bc1-5eda-48f0-a132-1956f9ba323e)
+# How does it look like
+
+[demo video](https://github.com/user-attachments/assets/d32b5e4a-a537-4ca3-b911-c6e3967e2c6b)
+
 
