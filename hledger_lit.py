@@ -35,7 +35,8 @@ def get_config_value(config, section, key, default):
     except (configparser.NoSectionError, configparser.NoOptionError):
         return default
 
-def save_config(filename, commodity, income_regex, expense_regex, asset_regex, liability_regex):
+def save_config(filename, commodity, income_regex, expense_regex, asset_regex, liability_regex,
+                historical_cmd, expenses_cmd, income_expenses_cmd, all_flows_cmd):
     """Save current configuration to config file."""
     config = configparser.ConfigParser()
 
@@ -50,6 +51,13 @@ def save_config(filename, commodity, income_regex, expense_regex, asset_regex, l
         'expense': expense_regex,
         'asset': asset_regex,
         'liability': liability_regex,
+    }
+
+    config['commands'] = {
+        'historical': historical_cmd,
+        'expenses_treemap': expenses_cmd,
+        'income_expenses': income_expenses_cmd,
+        'all_flows': all_flows_cmd,
     }
 
     # Write to file
@@ -69,11 +77,13 @@ LIABILITY_REGEX = 'liabilities'
 INCOME_REGEX    = 'income|virtual|revenues'
 EXPENSE_REGEX   = 'expenses'
 
-# Account regex patterns for your chart of accounts
-# Used to filter out non-account entries from the JSON balance report
-TOPLEVEL_ACCOUNT_CATEGORIES=[INCOME_REGEX,EXPENSE_REGEX,ASSET_REGEX,LIABILITY_REGEX]
-
-HLEDGER_EXTRA_ARGS = ''
+# Default hledger commands for each graph type
+# Available variables: {filename}, {commodity}, {start_date}, {end_date},
+#                      {income_regex}, {expense_regex}, {asset_regex}, {liability_regex}, {all_accounts}
+DEFAULT_HISTORICAL_CMD = 'hledger -f {filename} balance {all_accounts} not:tag:clopen --depth 1 --period daily --historical --value=then,{commodity} --infer-value -O json -b {start_date} -e {end_date}'
+DEFAULT_EXPENSES_CMD = 'hledger -f {filename} balance {expense_regex} not:tag:clopen --cost --value=then,{commodity} --infer-value --no-total --tree --no-elide -O json -b {start_date} -e {end_date}'
+DEFAULT_INCOME_EXPENSES_CMD = 'hledger -f {filename} balance {income_regex} {expense_regex} not:tag:clopen --cost --value=then,{commodity} --infer-value --no-total --tree --no-elide -O json -b {start_date} -e {end_date}'
+DEFAULT_ALL_FLOWS_CMD = 'hledger -f {filename} balance {all_accounts} not:tag:clopen --cost --value=then,{commodity} --infer-value --no-total --tree --no-elide -O json -b {start_date} -e {end_date}'
 
 
 # assets:cash -> assets
@@ -86,48 +96,68 @@ def run_hledger_command(command):
     process_output = subprocess.run(command.split(' '), stdout=subprocess.PIPE, text=True).stdout
     return json.loads(process_output)
 
-def read_current_balances(filename, account_regex, commodity, start_date=None, end_date=None):
-    # Explanation for the choice of arguments:
-    # "balance <account_regex>" - regex pattern to match accounts (e.g., "income|expenses|assets|liabilities")
-    # "not:tag:clopen" excludes closing/opening transactions
-    # "--cost --value=then,<commodity> --infer-value" - convert everything to a single commodity
-    # "--no-total" - ensure that we dont have a total row
-    # "--tree --no-elide" - ensure that parent accounts are listed even if they dont have balance changes, to make sure that our sankey flows dont have gaps
-    # "-O json" to produce JSON output
-    command = f'hledger -f {filename} balance {account_regex} not:tag:clopen --cost --value=then,{commodity} --infer-value --no-total --tree --no-elide -O json'
+def run_historical_command(command, commodity, asset_regex, liability_regex):
+    """Run a custom hledger command and parse historical balances."""
+    data = run_hledger_command(command)
 
-    # Add date range if provided
-    if start_date:
-        command += f' -b {start_date}'
-    if end_date:
-        command += f' -e {end_date}'
+    # Extract dates from prDates - use the start date of each period
+    dates = [period[0]['contents'] for period in data['prDates']]
+    num_periods = len(dates)
 
-    command += ' ' + HLEDGER_EXTRA_ARGS
+    # Compile regex patterns for matching
+    asset_pattern = re.compile('|'.join(asset_regex.split()))
+    liability_pattern = re.compile('|'.join(liability_regex.split()))
 
+    # Initialize net worth tracking
+    net_worth = [0.0] * num_periods
+
+    # Extract balances for each account
+    balances = {}
+    for row in data['prRows']:
+        account_name = row['prrName']
+        # Extract floating point values from each period and apply abs()
+        account_balances = []
+        for amount_list in row['prrAmounts']:
+            balance = 0
+            if amount_list:
+                # Find the amount matching the desired commodity
+                for amount in amount_list:
+                    if amount['acommodity'] == commodity:
+                        balance = abs(amount['aquantity']['floatingPoint'])
+                        break
+            account_balances.append(balance)
+        balances[account_name] = account_balances
+
+        # Update net worth: add assets, subtract liabilities
+        if asset_pattern.search(account_name):
+            net_worth = [nw + bal for nw, bal in zip(net_worth, account_balances)]
+        elif liability_pattern.search(account_name):
+            net_worth = [nw - bal for nw, bal in zip(net_worth, account_balances)]
+
+    # Add net worth to balances
+    balances['net_worth'] = net_worth
+
+    return {'dates': dates, 'balances': balances}
+
+def read_current_balances(command):
+    """Execute hledger command and parse current balances from JSON output."""
     # Execute command and parse JSON output
     data = run_hledger_command(command)
 
     # First element of the JSON array contains the account entries
     accounts = data[0]
 
-    # Convert space-separated patterns to regex OR pattern
-    # e.g., "income expenses" becomes "income|expenses"
-    regex_string = '|'.join(account_regex.split())
-    regex_pattern = re.compile(regex_string)
-
     # Build list of (account_name, balance) tuples
     balances = []
     for entry in accounts:
         account_name = entry[0]
-        # Filter to only include accounts that match the regex pattern
-        if regex_pattern.search(account_name):
-            # Get the balance from the amounts array (entry[3])
-            amounts = entry[3]
-            if amounts:
-                balance = amounts[0]["aquantity"]["floatingPoint"]
-            else:
-                balance = 0
-            balances.append((account_name, balance))
+        # Get the balance from the amounts array (entry[3])
+        amounts = entry[3]
+        if amounts:
+            balance = amounts[0]["aquantity"]["floatingPoint"]
+        else:
+            balance = 0
+        balances.append((account_name, balance))
 
     return balances
 
@@ -144,8 +174,6 @@ def read_historical_balances(filename, commodity, start_date=None, end_date=None
         command += f' -b {start_date}'
     if end_date:
         command += f' -e {end_date}'
-
-    command += ' ' + HLEDGER_EXTRA_ARGS
 
     # Execute command and parse JSON output
     data = run_hledger_command(command)
@@ -376,6 +404,12 @@ with st.sidebar:
     default_asset = get_config_value(config, 'regex', 'asset', ASSET_REGEX)
     default_liability = get_config_value(config, 'regex', 'liability', LIABILITY_REGEX)
 
+    # Get command defaults from config
+    default_historical_cmd = get_config_value(config, 'commands', 'historical', DEFAULT_HISTORICAL_CMD)
+    default_expenses_cmd = get_config_value(config, 'commands', 'expenses_treemap', DEFAULT_EXPENSES_CMD)
+    default_income_expenses_cmd = get_config_value(config, 'commands', 'income_expenses', DEFAULT_INCOME_EXPENSES_CMD)
+    default_all_flows_cmd = get_config_value(config, 'commands', 'all_flows', DEFAULT_ALL_FLOWS_CMD)
+
     income_regex = st.text_input(
         "Income Regex",
         value=default_income,
@@ -400,9 +434,45 @@ with st.sidebar:
         help="Regex to match liability accounts (e.g., 'liabilities'). Multiple patterns can be separated by space or '|'"
     )
 
+    st.subheader("Command Templates")
+    st.caption("Available variables: {filename}, {commodity}, {start_date}, {end_date}, {income_regex}, {expense_regex}, {asset_regex}, {liability_regex}, {all_accounts}")
+
+    with st.expander("Historical Balances Command", expanded=False):
+        historical_cmd = st.text_area(
+            "HLedger Command",
+            value=default_historical_cmd,
+            height=100,
+            key="historical_cmd_sidebar"
+        )
+
+    with st.expander("Expenses Treemap Command", expanded=False):
+        expenses_cmd = st.text_area(
+            "HLedger Command",
+            value=default_expenses_cmd,
+            height=100,
+            key="expenses_cmd_sidebar"
+        )
+
+    with st.expander("Income & Expenses Command", expanded=False):
+        income_expenses_cmd = st.text_area(
+            "HLedger Command",
+            value=default_income_expenses_cmd,
+            height=100,
+            key="income_expenses_cmd_sidebar"
+        )
+
+    with st.expander("All Flows Command", expanded=False):
+        all_flows_cmd = st.text_area(
+            "HLedger Command",
+            value=default_all_flows_cmd,
+            height=100,
+            key="all_flows_cmd_sidebar"
+        )
+
 # Handle Save Config button
 if save_config_button:
-    save_config(filename, commodity, income_regex, expense_regex, asset_regex, liability_regex)
+    save_config(filename, commodity, income_regex, expense_regex, asset_regex, liability_regex,
+                historical_cmd, expenses_cmd, income_expenses_cmd, all_flows_cmd)
     st.success(f"Configuration saved to {get_config_path()}")
 
 # Handle Reset to Defaults button
@@ -425,15 +495,32 @@ if 'income_expenses_fig' not in st.session_state:
 if 'all_balances_fig' not in st.session_state:
     st.session_state.all_balances_fig = None
 
+# Prepare variables for command templates
+all_accounts = f"{income_regex} {expense_regex} {asset_regex} {liability_regex}"
+cmd_vars = {
+    'filename': filename,
+    'commodity': commodity,
+    'start_date': start_date,
+    'end_date': end_date,
+    'income_regex': income_regex,
+    'expense_regex': expense_regex,
+    'asset_regex': asset_regex,
+    'liability_regex': liability_regex,
+    'all_accounts': all_accounts,
+}
+
 # Historical Account Balances
 st.header("Historical Account Balances")
 st.caption("💡 Tip: Click legend items to show/hide lines, double-click to isolate a single line")
+
 generate_historical = st.button("Generate Historical Balances", key="gen_historical")
 
 if generate_historical:
     try:
         with st.spinner("Generating historical balances..."):
-            historical_data = read_historical_balances(filename, commodity, start_date, end_date, income_regex, expense_regex, asset_regex, liability_regex)
+            # Expand command template with variables
+            expanded_cmd = historical_cmd.format(**cmd_vars)
+            historical_data = run_historical_command(expanded_cmd, commodity, asset_regex, liability_regex)
             st.session_state.historical_fig = historical_balances_plot(historical_data)
     except subprocess.CalledProcessError as e:
         st.error(f"Error running hledger command: {e}")
@@ -450,12 +537,15 @@ st.divider()
 
 # Expenses Treemap
 st.header("Expenses Treemap")
+
 generate_treemap = st.button("Generate Expenses Treemap", key="gen_treemap")
 
 if generate_treemap:
     try:
         with st.spinner("Generating expenses treemap..."):
-            expenses = read_current_balances(filename, expense_regex, commodity, start_date, end_date)
+            # Expand command template with variables
+            expanded_cmd = expenses_cmd.format(**cmd_vars)
+            expenses = read_current_balances(expanded_cmd)
             st.session_state.expenses_fig = expenses_treemap_plot(expenses)
     except subprocess.CalledProcessError as e:
         st.error(f"Error running hledger command: {e}")
@@ -472,13 +562,15 @@ st.divider()
 
 # Income & Expenses Flows
 st.header("Income & Expenses Flows")
+
 generate_income_expenses = st.button("Generate Income & Expenses Flows", key="gen_income_expenses")
 
 if generate_income_expenses:
     try:
         with st.spinner("Generating income & expenses flows..."):
-            income_expenses_pat = income_regex + ' ' + expense_regex
-            income_expenses = read_current_balances(filename, income_expenses_pat, commodity, start_date, end_date)
+            # Expand command template with variables
+            expanded_cmd = income_expenses_cmd.format(**cmd_vars)
+            income_expenses = read_current_balances(expanded_cmd)
             income_expenses_sankey = to_sankey_data(income_expenses, income_regex, expense_regex, asset_regex, liability_regex)
             st.session_state.income_expenses_fig = sankey_plot(income_expenses_sankey)
     except subprocess.CalledProcessError as e:
@@ -496,13 +588,15 @@ st.divider()
 
 # All Cash Flows
 st.header("All Cash Flows")
+
 generate_all_flows = st.button("Generate All Cash Flows", key="gen_all_flows")
 
 if generate_all_flows:
     try:
         with st.spinner("Generating all cash flows..."):
-            all_pat = income_regex + ' ' + expense_regex + ' ' + asset_regex + ' ' + liability_regex
-            all_balances = read_current_balances(filename, all_pat, commodity, start_date, end_date)
+            # Expand command template with variables
+            expanded_cmd = all_flows_cmd.format(**cmd_vars)
+            all_balances = read_current_balances(expanded_cmd)
             all_balances_sankey = to_sankey_data(all_balances, income_regex, expense_regex, asset_regex, liability_regex)
             st.session_state.all_balances_fig = sankey_plot(all_balances_sankey)
     except subprocess.CalledProcessError as e:
